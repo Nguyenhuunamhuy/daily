@@ -1,0 +1,11 @@
+# Backend — không commit DB cục bộ / upload / dependencies
+back/node_modules/
+back/data/
+back/uploads/
+*.sqlite
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
