@@ -1,6 +1,19 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../data/diary_store.dart';
+
+class _PhotoItem {
+  _PhotoItem.network({required this.id, required this.url}) : localPath = null;
+  _PhotoItem.local({required this.localPath}) : id = null, url = null;
+
+  final String? id;
+  final String? url;
+  final String? localPath;
+}
 
 class EditorPage extends StatefulWidget {
   const EditorPage({super.key, this.entryId});
@@ -17,29 +30,152 @@ class _EditorPageState extends State<EditorPage> {
   final _formKey = GlobalKey<FormState>();
   final _titleCtrl = TextEditingController();
   final _contentCtrl = TextEditingController();
-  final List<String> _photoUrls = [];
+  DateTime _entryDate = DateTime.now();
+  final List<_PhotoItem> _photos = [];
+  Set<String> _initialRemoteIds = {};
 
-  bool _initialized = false;
+  bool _loadDone = false;
+  bool _loadingEntry = false;
+  bool _saving = false;
+  String? _loadError;
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_initialized) return;
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadIfEdit());
+  }
 
-    final store = DiaryStoreScope.of(context);
+  Future<void> _loadIfEdit() async {
     final id = widget.entryId;
-    if (id != null) {
-      final entry = store.getById(id);
-      if (entry != null) {
-        _titleCtrl.text = entry.title;
-        _contentCtrl.text = entry.content;
-        _photoUrls
-          ..clear()
-          ..addAll(entry.photoUrls);
+    if (id == null) {
+      setState(() => _loadDone = true);
+      return;
+    }
+    setState(() {
+      _loadingEntry = true;
+      _loadError = null;
+    });
+    try {
+      final store = DiaryStoreScope.of(context);
+      final entry = await store.fetchEntry(id);
+      if (!mounted) return;
+      if (entry == null) {
+        setState(() {
+          _loadingEntry = false;
+          _loadDone = true;
+          _loadError = 'Không tải được bài nhật ký.';
+        });
+        return;
+      }
+      _titleCtrl.text = entry.title;
+      _contentCtrl.text = entry.content;
+      _entryDate = entry.entryDate;
+      _photos
+        ..clear()
+        ..addAll(
+          entry.photos.map((p) => _PhotoItem.network(id: p.id, url: p.url)),
+        );
+      _initialRemoteIds = entry.photos.where((p) => p.id.isNotEmpty).map((p) => p.id).toSet();
+      setState(() {
+        _loadingEntry = false;
+        _loadDone = true;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loadingEntry = false;
+        _loadDone = true;
+        _loadError = e.toString();
+      });
+    }
+  }
+
+  Future<void> _pickImages() async {
+    final picker = ImagePicker();
+    List<XFile> list;
+    try {
+      list = await picker.pickMultiImage(imageQuality: 85);
+    } on MissingPluginException catch (_) {
+      // Một số bản build chỉ thiếu pickMultiImage; thử đơn ảnh. Nếu cả hai đều MissingPlugin → plugin chưa gắn (cần flutter run lại, không Hot Reload).
+      try {
+        final one = await picker.pickImage(
+          source: ImageSource.gallery,
+          imageQuality: 85,
+        );
+        list = one != null ? [one] : [];
+      } on MissingPluginException catch (_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Không thể mở thư viện ảnh (plugin chưa được gắn vào bản chạy). '
+              'Hãy dừng app hoàn toàn, chạy: flutter clean && flutter run — không chỉ Hot Reload.',
+            ),
+          ),
+        );
+        return;
       }
     }
+    if (list.isEmpty) return;
+    setState(() {
+      for (final x in list) {
+        _photos.add(_PhotoItem.local(localPath: x.path));
+      }
+    });
+  }
 
-    _initialized = true;
+  Future<void> _save() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    final title = _titleCtrl.text.trim();
+    final content = _contentCtrl.text.trim();
+    final store = DiaryStoreScope.of(context);
+
+    final locals = _photos.where((p) => p.localPath != null).map((p) => p.localPath!).toList();
+    final currentRemoteIds = _photos
+        .where((p) => p.id != null && p.id!.isNotEmpty)
+        .map((p) => p.id!)
+        .toSet();
+    final removedIds = _initialRemoteIds.difference(currentRemoteIds).toList();
+
+    setState(() => _saving = true);
+    try {
+      if (widget.entryId == null) {
+        final newId = await store.createEntry(
+          title: title,
+          content: content,
+          entryDate: _entryDate,
+          localPhotoPaths: locals,
+        );
+        if (!mounted) return;
+        if (newId == null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(store.error ?? 'Lưu thất bại')),
+          );
+          return;
+        }
+        Navigator.of(context).pop();
+        return;
+      }
+
+      final ok = await store.updateEntry(
+        id: widget.entryId!,
+        title: title,
+        content: content,
+        entryDate: _entryDate,
+        newLocalPaths: locals,
+        removedPhotoIds: removedIds,
+      );
+      if (!mounted) return;
+      if (!ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(store.error ?? 'Lưu thất bại')),
+        );
+        return;
+      }
+      Navigator.of(context).pop();
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   @override
@@ -51,8 +187,23 @@ class _EditorPageState extends State<EditorPage> {
 
   @override
   Widget build(BuildContext context) {
-    final store = DiaryStoreScope.of(context);
     final isEdit = widget.entryId != null;
+
+    if (!_loadDone) {
+      return Scaffold(
+        appBar: AppBar(title: Text(isEdit ? 'Sửa nhật ký' : 'Tạo nhật ký')),
+        body: Center(
+          child: _loadingEntry ? const CircularProgressIndicator() : Text(_loadError ?? ''),
+        ),
+      );
+    }
+
+    if (_loadError != null && isEdit) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Sửa nhật ký')),
+        body: Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(_loadError!))),
+      );
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -85,24 +236,42 @@ class _EditorPageState extends State<EditorPage> {
               },
             ),
             const SizedBox(height: 16),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Ngày nhật ký'),
+              subtitle: Text('${_entryDate.day}/${_entryDate.month}/${_entryDate.year}'),
+              trailing: const Icon(Icons.calendar_today),
+              onTap: () async {
+                final date = await showDatePicker(
+                  context: context,
+                  initialDate: _entryDate,
+                  firstDate: DateTime(2000),
+                  lastDate: DateTime(2100),
+                );
+                if (date != null && mounted) {
+                  setState(() => _entryDate = date);
+                }
+              },
+            ),
+            const SizedBox(height: 16),
             Row(
               children: [
                 Text(
-                  'Ảnh (giả lập)',
+                  'Ảnh',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 const Spacer(),
                 TextButton.icon(
-                  onPressed: () => setState(() => _photoUrls.add(store.randomPhotoUrl())),
+                  onPressed: _saving ? null : _pickImages,
                   icon: const Icon(Icons.add_photo_alternate_outlined),
                   label: const Text('Thêm ảnh'),
                 ),
               ],
             ),
             const SizedBox(height: 8),
-            if (_photoUrls.isEmpty)
+            if (_photos.isEmpty)
               Text(
-                'Chưa có ảnh. Tuần 2 dùng ảnh mẫu từ internet để demo UI.',
+                'Chưa có ảnh. Chọn từ thư viện để đăng kèm bài.',
                 style: Theme.of(context)
                     .textTheme
                     .bodyMedium
@@ -110,32 +279,19 @@ class _EditorPageState extends State<EditorPage> {
               )
             else
               _EditablePhotoGrid(
-                urls: _photoUrls,
-                onRemove: (i) => setState(() => _photoUrls.removeAt(i)),
+                items: _photos,
+                onRemove: (i) => setState(() => _photos.removeAt(i)),
               ),
             const SizedBox(height: 20),
             FilledButton(
-              onPressed: () {
-                if (!(_formKey.currentState?.validate() ?? false)) return;
-
-                final title = _titleCtrl.text.trim();
-                final content = _contentCtrl.text.trim();
-                final photos = List<String>.from(_photoUrls);
-
-                if (isEdit) {
-                  store.update(
-                    id: widget.entryId!,
-                    title: title,
-                    content: content,
-                    photoUrls: photos,
-                  );
-                  Navigator.of(context).pop();
-                } else {
-                  store.create(title: title, content: content, photoUrls: photos);
-                  Navigator.of(context).pop();
-                }
-              },
-              child: const Text('Lưu'),
+              onPressed: _saving ? null : _save,
+              child: _saving
+                  ? const SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Lưu'),
             ),
           ],
         ),
@@ -145,9 +301,9 @@ class _EditorPageState extends State<EditorPage> {
 }
 
 class _EditablePhotoGrid extends StatelessWidget {
-  const _EditablePhotoGrid({required this.urls, required this.onRemove});
+  const _EditablePhotoGrid({required this.items, required this.onRemove});
 
-  final List<String> urls;
+  final List<_PhotoItem> items;
   final void Function(int index) onRemove;
 
   @override
@@ -160,20 +316,27 @@ class _EditablePhotoGrid extends StatelessWidget {
         crossAxisSpacing: 8,
         mainAxisSpacing: 8,
       ),
-      itemCount: urls.length,
+      itemCount: items.length,
       itemBuilder: (context, index) {
-        final url = urls[index];
+        final item = items[index];
         return Stack(
           children: [
             Positioned.fill(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(8),
-                child: Image.network(
-                  url,
-                  fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) =>
-                      const Center(child: Icon(Icons.broken_image_outlined)),
-                ),
+                child: item.localPath != null
+                    ? Image.file(
+                        File(item.localPath!),
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) =>
+                            const Center(child: Icon(Icons.broken_image_outlined)),
+                      )
+                    : Image.network(
+                        item.url!,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) =>
+                            const Center(child: Icon(Icons.broken_image_outlined)),
+                      ),
               ),
             ),
             Positioned(

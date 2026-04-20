@@ -1,122 +1,112 @@
-import 'dart:math';
-
 import 'package:flutter/widgets.dart';
 
+import '../config/api_config.dart';
 import '../models/diary_entry.dart';
+import 'diary_api.dart';
 
-/// Tuần 2: dữ liệu giả trong bộ nhớ (không gọi API).
 class DiaryStore extends ChangeNotifier {
-  DiaryStore({List<DiaryEntry>? initialEntries})
-      : _entries = List.unmodifiable(initialEntries ?? const []);
+  DiaryStore({DiaryApi? api}) : _api = api ?? DiaryApi(baseUrl: ApiConfig.baseUrl);
 
-  factory DiaryStore.seeded() {
-    final now = DateTime.now();
-    return DiaryStore(
-      initialEntries: [
-        DiaryEntry(
-          id: '1',
-          title: 'Ngày đầu tiên',
-          content: 'Hôm nay mình bắt đầu viết nhật ký. Đây là bài mẫu.',
-          createdAt: now.subtract(const Duration(days: 2)),
-          updatedAt: now.subtract(const Duration(days: 2)),
-          photoUrls: const ['https://picsum.photos/id/1060/800/600'],
-        ),
-        DiaryEntry(
-          id: '2',
-          title: 'Đi dạo buổi tối',
-          content: 'Trời mát, mình đi dạo quanh nhà và chụp vài tấm ảnh.',
-          createdAt: now.subtract(const Duration(days: 1, hours: 3)),
-          updatedAt: now.subtract(const Duration(days: 1, hours: 3)),
-          photoUrls: const [
-            'https://picsum.photos/id/1011/800/600',
-            'https://picsum.photos/id/1015/800/600',
-          ],
-        ),
-        DiaryEntry(
-          id: '3',
-          title: '',
-          content: 'Một bài không có tiêu đề để test UI.',
-          createdAt: now.subtract(const Duration(hours: 7)),
-          updatedAt: now.subtract(const Duration(hours: 7)),
-          photoUrls: const [],
-        ),
-      ],
-    );
-  }
+  final DiaryApi _api;
 
-  List<DiaryEntry> _entries;
-  int _idCounter = 100;
-  final _rng = Random();
+  List<DiaryEntry> _entries = [];
+  bool _loading = false;
+  String? _error;
 
   List<DiaryEntry> get entries =>
-      _entries.toList()..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      List<DiaryEntry>.from(_entries)..sort((a, b) => b.entryDate.compareTo(a.entryDate));
 
-  DiaryEntry? getById(String id) {
-    for (final e in _entries) {
-      if (e.id == id) return e;
+  bool get loading => _loading;
+  String? get error => _error;
+
+  DiaryApi get api => _api;
+
+  Future<List<DiaryEntry>> fetchList({String? query}) => _api.listEntries(query: query);
+
+  Future<void> refreshList({String? query}) async {
+    _loading = true;
+    _error = null;
+    notifyListeners();
+    try {
+      _entries = await _api.listEntries(query: query);
+      _error = null;
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _loading = false;
+      notifyListeners();
     }
-    return null;
   }
 
-  List<DiaryEntry> search(String query) {
-    final q = query.trim().toLowerCase();
-    if (q.isEmpty) return entries;
-    return entries.where((e) {
-      return e.title.toLowerCase().contains(q) ||
-          e.content.toLowerCase().contains(q);
-    }).toList();
+  Future<DiaryEntry?> fetchEntry(String id) async {
+    try {
+      return await _api.getEntry(id);
+    } catch (_) {
+      return null;
+    }
   }
 
-  String create({
+  Future<String?> createEntry({
     required String title,
     required String content,
-    required List<String> photoUrls,
-  }) {
-    final now = DateTime.now();
-    final id = (++_idCounter).toString();
-    final entry = DiaryEntry(
-      id: id,
-      title: title,
-      content: content,
-      createdAt: now,
-      updatedAt: now,
-      photoUrls: List.unmodifiable(photoUrls),
-    );
-    _entries = List.unmodifiable([entry, ..._entries]);
+    required DateTime entryDate,
+    required List<String> localPhotoPaths,
+  }) async {
+    _error = null;
     notifyListeners();
-    return id;
+    try {
+      final created = await _api.createEntry(title: title, content: content, entryDate: entryDate);
+      if (localPhotoPaths.isNotEmpty) {
+        await _api.uploadPhotos(created.id, localPhotoPaths);
+      }
+      await refreshList();
+      return created.id;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return null;
+    }
   }
 
-  void update({
+  Future<bool> updateEntry({
     required String id,
     required String title,
     required String content,
-    required List<String> photoUrls,
-  }) {
-    final now = DateTime.now();
-    _entries = List.unmodifiable(
-      _entries.map((e) {
-        if (e.id != id) return e;
-        return e.copyWith(
-          title: title,
-          content: content,
-          updatedAt: now,
-          photoUrls: List.unmodifiable(photoUrls),
-        );
-      }).toList(),
-    );
+    required DateTime entryDate,
+    required List<String> newLocalPaths,
+    required List<String> removedPhotoIds,
+  }) async {
+    _error = null;
     notifyListeners();
+    try {
+      for (final pid in removedPhotoIds) {
+        if (pid.isNotEmpty) await _api.deletePhoto(pid);
+      }
+      await _api.updateEntry(id: id, title: title, content: content, entryDate: entryDate);
+      if (newLocalPaths.isNotEmpty) {
+        await _api.uploadPhotos(id, newLocalPaths);
+      }
+      await refreshList();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return false;
+    }
   }
 
-  void delete(String id) {
-    _entries = List.unmodifiable(_entries.where((e) => e.id != id).toList());
+  Future<bool> deleteEntry(String id) async {
+    _error = null;
     notifyListeners();
-  }
-
-  /// Ảnh giả (URL) để mô phỏng đăng ảnh — Tuần 5 sẽ thay bằng upload thật.
-  String randomPhotoUrl() {
-    final id = 1000 + _rng.nextInt(80);
-    return 'https://picsum.photos/id/$id/800/600';
+    try {
+      await _api.deleteEntry(id);
+      await refreshList();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+      return false;
+    }
   }
 }
 

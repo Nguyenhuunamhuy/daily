@@ -83,7 +83,7 @@ function createApp() {
 
       const rows = await db.all(
         `
-        SELECT id, title, content, created_at, updated_at
+        SELECT id, title, content, entry_date, created_at, updated_at
         FROM entries
         ${where}
         ORDER BY created_at DESC
@@ -156,6 +156,7 @@ function createApp() {
           id: r.id,
           title: r.title ?? "",
           contentPreview,
+          entryDate: r.entry_date ?? r.created_at,
           createdAt: r.created_at,
           updatedAt: r.updated_at,
           coverPhotoUrl: stats.coverPhotoUrl,
@@ -182,7 +183,7 @@ function createApp() {
       const db = await getDb();
       const id = req.params.id;
       const entry = await db.get(
-        "SELECT id, title, content, created_at, updated_at FROM entries WHERE id = ?",
+        "SELECT id, title, content, entry_date, created_at, updated_at FROM entries WHERE id = ?",
         [id],
       );
       if (!entry) return sendError(res, 404, "NOT_FOUND", "Không tìm thấy bài nhật ký");
@@ -197,6 +198,7 @@ function createApp() {
           id: entry.id,
           title: entry.title ?? "",
           content: entry.content,
+          entryDate: entry.entry_date ?? entry.created_at,
           createdAt: entry.created_at,
           updatedAt: entry.updated_at,
           photos: photos.map((p) => ({
@@ -221,9 +223,10 @@ function createApp() {
 
       const id = makeId();
       const t = nowMs();
+      const entryDate = req.body?.entryDate ?? t;
       await db.run(
-        "INSERT INTO entries (id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        [id, title, content, t, t],
+        "INSERT INTO entries (id, title, content, entry_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        [id, title, content, entryDate, t, t],
       );
 
       res.status(201).json({
@@ -231,6 +234,7 @@ function createApp() {
           id,
           title,
           content,
+          entryDate,
           createdAt: t,
           updatedAt: t,
           photos: [],
@@ -250,17 +254,18 @@ function createApp() {
       const content = (req.body?.content ?? "").toString().trim();
       if (!content) return sendError(res, 400, "VALIDATION_ERROR", "Nội dung không được rỗng");
 
-      const existing = await db.get("SELECT id FROM entries WHERE id = ?", [id]);
+      const existing = await db.get("SELECT id, entry_date FROM entries WHERE id = ?", [id]);
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Không tìm thấy bài nhật ký");
 
       const t = nowMs();
+      const entryDate = req.body?.entryDate ?? (existing.entry_date ?? t);
       await db.run(
-        "UPDATE entries SET title = ?, content = ?, updated_at = ? WHERE id = ?",
-        [title, content, t, id],
+        "UPDATE entries SET title = ?, content = ?, entry_date = ?, updated_at = ? WHERE id = ?",
+        [title, content, entryDate, t, id],
       );
 
       const entry = await db.get(
-        "SELECT id, title, content, created_at, updated_at FROM entries WHERE id = ?",
+        "SELECT id, title, content, entry_date, created_at, updated_at FROM entries WHERE id = ?",
         [id],
       );
       const photos = await db.all(
@@ -273,6 +278,7 @@ function createApp() {
           id: entry.id,
           title: entry.title ?? "",
           content: entry.content,
+          entryDate: entry.entry_date ?? entry.created_at,
           createdAt: entry.created_at,
           updatedAt: entry.updated_at,
           photos: photos.map((p) => ({

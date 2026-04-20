@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 
 import '../data/diary_store.dart';
+import '../models/diary_entry.dart';
 import 'editor_page.dart';
 
-class DetailPage extends StatelessWidget {
+class DetailPage extends StatefulWidget {
   const DetailPage({super.key, required this.entryId});
 
   static const routeName = '/detail';
@@ -11,16 +12,47 @@ class DetailPage extends StatelessWidget {
   final String? entryId;
 
   @override
+  State<DetailPage> createState() => _DetailPageState();
+}
+
+class _DetailPageState extends State<DetailPage> {
+  DiaryEntry? _entry;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  Future<void> _load() async {
+    final id = widget.entryId;
+    if (id == null) {
+      setState(() {
+        _entry = null;
+        _loading = false;
+      });
+      return;
+    }
+    setState(() => _loading = true);
+    final e = await DiaryStoreScope.of(context).fetchEntry(id);
+    if (!mounted) return;
+    setState(() {
+      _entry = e;
+      _loading = false;
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     final store = DiaryStoreScope.of(context);
-    final id = entryId;
-    final entry = (id == null) ? null : store.getById(id);
+    final entry = _entry;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Chi tiết nhật ký'),
         actions: [
-          if (entry != null)
+          if (!_loading && entry != null)
             PopupMenuButton<String>(
               onSelected: (value) async {
                 switch (value) {
@@ -29,6 +61,8 @@ class DetailPage extends StatelessWidget {
                       EditorPage.routeName,
                       arguments: entry.id,
                     );
+                    if (!mounted) return;
+                    await _load();
                     break;
                   case 'delete':
                     final ok = await showDialog<bool>(
@@ -49,8 +83,9 @@ class DetailPage extends StatelessWidget {
                       ),
                     );
                     if (ok == true) {
-                      store.delete(entry.id);
-                      if (context.mounted) Navigator.of(context).pop();
+                      final ok2 = await store.deleteEntry(entry.id);
+                      if (!context.mounted) return;
+                      if (ok2) Navigator.of(context).pop();
                     }
                     break;
                 }
@@ -62,54 +97,60 @@ class DetailPage extends StatelessWidget {
             ),
         ],
       ),
-      body: entry == null
-          ? Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text(
-                  'Không tìm thấy bài nhật ký.',
-                  style: Theme.of(context).textTheme.bodyLarge,
-                ),
-              ),
-            )
-          : ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                Text(
-                  entry.title.trim().isEmpty ? '(Không có tiêu đề)' : entry.title,
-                  style: Theme.of(context).textTheme.headlineSmall,
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  _formatDateTime(entry.createdAt),
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodySmall
-                      ?.copyWith(color: Theme.of(context).colorScheme.outline),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  entry.content,
-                  style: Theme.of(context).textTheme.bodyLarge,
-                ),
-                if (entry.photoUrls.isNotEmpty) ...[
-                  const SizedBox(height: 20),
-                  Text(
-                    'Ảnh',
-                    style: Theme.of(context).textTheme.titleMedium,
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : entry == null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      'Không tìm thấy bài nhật ký.',
+                      style: Theme.of(context).textTheme.bodyLarge,
+                    ),
                   ),
-                  const SizedBox(height: 10),
-                  _PhotoGrid(urls: entry.photoUrls),
-                ],
-              ],
-            ),
-      floatingActionButton: entry == null
+                )
+              : ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    Text(
+                      entry.title.trim().isEmpty ? '(Không có tiêu đề)' : entry.title,
+                      style: Theme.of(context).textTheme.headlineSmall,
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      _formatDateTime(entry.entryDate),
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(color: Theme.of(context).colorScheme.outline),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      entry.content,
+                      style: Theme.of(context).textTheme.bodyLarge,
+                    ),
+                    if (entry.photoUrls.isNotEmpty) ...[
+                      const SizedBox(height: 20),
+                      Text(
+                        'Ảnh',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 10),
+                      _PhotoGrid(urls: entry.photoUrls),
+                    ],
+                  ],
+                ),
+      floatingActionButton: _loading || entry == null
           ? null
           : FloatingActionButton.extended(
-              onPressed: () => Navigator.of(context).pushNamed(
-                EditorPage.routeName,
-                arguments: entry.id,
-              ),
+              onPressed: () async {
+                await Navigator.of(context).pushNamed(
+                  EditorPage.routeName,
+                  arguments: entry.id,
+                );
+                if (!mounted) return;
+                await _load();
+              },
               icon: const Icon(Icons.edit),
               label: const Text('Sửa'),
             ),

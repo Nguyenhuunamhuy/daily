@@ -9,13 +9,13 @@ import 'pages/search_page.dart';
 class DiaryApp extends StatelessWidget {
   const DiaryApp({super.key, this.store});
 
-  /// Tuỳ chọn (test). Mặc định: [DiaryStore.seeded] — dữ liệu giả Tuần 2.
+  /// Tuỳ chọn (ví dụ test) — mặc định tạo [DiaryStore] với [ApiConfig.baseUrl].
   final DiaryStore? store;
 
   @override
   Widget build(BuildContext context) {
     return DiaryStoreScope(
-      store: store ?? DiaryStore.seeded(),
+      store: store ?? DiaryStore(),
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
         title: 'Nhật ký',
